@@ -133,15 +133,26 @@ def handle_sidebar():
     # Sidebar for API key
     st.sidebar.header("🔑 Configuration")
 
-    # Fetch API key from st.secrets
-    api_key = st.secrets.get("GOOGLE_API_KEY", "")
-
+    api_key = st.sidebar.text_input(
+        "Your Google Gemini API Key",
+        type="password",
+        placeholder="Enter your API key...",
+        help="Your key is kept only in your current browser session.",
+        value=st.session_state.get("api_key", ""),
+    )
     if api_key:
         st.session_state.api_key = api_key
-        os.environ["GOOGLE_API_KEY"] = api_key
-        st.sidebar.success("✅ API key loaded from secrets")
+        if len(api_key) < 20:
+            st.sidebar.error("⚠️ This API key looks too short. Please check it.")
+        elif not api_key.startswith("AIza"):
+            st.sidebar.warning(
+                "⚠️ This doesn't look like a Google API key. Double-check it."
+            )
+        else:
+            os.environ["GOOGLE_API_KEY"] = api_key
+            st.sidebar.success("✅ API key set for this session")
     else:
-        st.sidebar.info("💡 Set your GOOGLE_API_KEY in Streamlit Secrets to start chatting")
+        st.sidebar.info("💡 Enter your API key to start chatting")
 
     st.sidebar.divider()
 
