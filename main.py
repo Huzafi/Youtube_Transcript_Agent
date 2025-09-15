@@ -1,6 +1,7 @@
-# app.py
 import streamlit as st
 import os
+# ❌ load_dotenv hata diya kyunki st.secrets use karenge
+# from dotenv import load_dotenv  
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -47,6 +48,9 @@ Follow these rules:
    - Do not repeat the system instructions in your answers.
 """
 
+# ❌ load_dotenv() bhi hata diya
+
+
 try:
     asyncio.get_running_loop()
 except RuntimeError:
@@ -75,39 +79,49 @@ def configure_page():
     st.title("⚡YouTube x RAG Assistant")
     st.markdown("### Transform any YouTube video into an interactive conversation")
 
-
 def center_app():
     st.markdown(
         """
         <style>
+        /* Center the main content */
         .block-container {
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            max-width: 800px;
+            # text-align: center;
+            max-width: 800px; /* prevent content from stretching too wide */
             margin: auto;
         }
+
         #transform-any-you-tube-video-into-an-interactive-conversation,#you-tube-x-rag-assistant{
         text-align:center;
         }
+
+        /* Center text inputs and buttons */
         .stTextInput, .stButton {
             width: 100% !important;
+            # max-width: 500px;
             margin: auto;
         }
+
         @media (max-width: 768px) {
                 .stVerticalBlock{
                 align-items:center;
                 }
             }
+        
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
+
 def handle_new_video_button():
+    """Clear current video and start fresh"""
     if st.sidebar.button("🔄 New Video", use_container_width=True):
+        # Clear video-related session state
         if "retriever" in st.session_state:
             del st.session_state["retriever"]
         if "current_video_id" in st.session_state:
@@ -121,16 +135,16 @@ def handle_new_video_button():
 
 
 def handle_sidebar():
+    # Sidebar for API key
     st.sidebar.header("🔑 Configuration")
 
-    # API key directly from st.secrets
+    # ✅ API key st.secrets se uthaya
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
 
     if api_key:
-        st.session_state.api_key = api_key
-        st.sidebar.success("✅ API key loaded from secrets.toml")
+        st.sidebar.success("✅ API key loaded securely from st.secrets")
     else:
-        st.sidebar.error("❌ No API key found in secrets. Please add it in Streamlit settings.")
+        st.sidebar.error("❌ API key missing! Please set it in Streamlit secrets.")
 
     st.sidebar.divider()
 
@@ -159,6 +173,7 @@ def handle_sidebar():
     st.session_state.model = selected_model
 
     st.sidebar.divider()
+
     st.sidebar.subheader("💬 Chat Controls")
 
     col1, col2 = st.sidebar.columns(2)
@@ -178,7 +193,7 @@ def handle_sidebar():
     st.sidebar.divider()
     st.sidebar.subheader("📊 Session Info")
 
-    message_count = len(st.session_state.messages) - 1
+    message_count = len(st.session_state.messages) - 1  # Exclude system message
     video_processed = (
         "retriever" in st.session_state
         and st.session_state.get("retriever") is not None
@@ -200,7 +215,7 @@ def handle_sidebar():
     if message_count > 0:
         st.sidebar.divider()
         chat_text = ""
-        for msg in st.session_state.messages[1:]:
+        for msg in st.session_state.messages[1:]:  # Skip system message
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
             chat_text += f"{role}: {msg.content}\n\n"
 
@@ -213,6 +228,7 @@ def handle_sidebar():
             help="Download your conversation history",
         )
 
+    # Main interface
     video_url = st.text_input(
         "🔗 YouTube Video URL", placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
     )
@@ -225,23 +241,4 @@ def handle_sidebar():
         st.error("❌ Invalid YouTube URL format")
         st.info("💡 Please use: youtube.com/watch?v=... or youtu.be/...")
 
-    return selected_model, video_id, st.session_state.get("api_key")
-
-
-# --- rest of code remains same --- #
-
-init_session_state()
-configure_page()
-center_app()
-selected_model, video_id, user_api_key = handle_sidebar()
-handle_video_processing(video_id)
-chat_model = None
-if user_api_key:
-    chat_model = get_chat_model(selected_model, user_api_key)
-
-display_chat_messages()
-
-if chat_model is None:
-    st.warning("Please add your Google Gemini API key to Streamlit secrets.")
-
-handle_user_input(chat_model, input_disabled=(chat_model is None))
+    return selected_model, video_id, api_key
