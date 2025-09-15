@@ -3,6 +3,6 @@ ipykernel
 ipywidgets
 openai-agents
 openai>=1.12.0
-youtube-transcript-api>=0.6.2
+youtube-transcript-api>=0.6.0
 streamlit
 
