@@ -42,6 +42,8 @@ instructions = (
 # Tool function
 @function_tool
 def fetch_youtube_transcript(url: str) -> str:
+    from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+
     video_id_pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
     video_id_match = re.search(video_id_pattern, url)
 
@@ -51,7 +53,10 @@ def fetch_youtube_transcript(url: str) -> str:
     video_id = video_id_match.group(1)
 
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        # New way to get transcript
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript = transcript_list.find_transcript(['en']).fetch()
+
         formatted_entries = []
         for entry in transcript:
             minutes = int(entry['start'] // 60)
@@ -59,6 +64,11 @@ def fetch_youtube_transcript(url: str) -> str:
             timestamp = f"[{minutes:02d}:{seconds:02d}]"
             formatted_entries.append(f"{timestamp} {entry['text']}")
         return "\n".join(formatted_entries)
+
+    except TranscriptsDisabled:
+        raise Exception("Transcripts are disabled for this video.")
+    except NoTranscriptFound:
+        raise Exception("No transcript available in English.")
     except Exception as e:
         raise Exception(f"Error fetching transcript: {str(e)}")
 
