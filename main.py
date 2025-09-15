@@ -98,7 +98,7 @@ def extract_video_id(url_or_id: str) -> str:
 
 def display_video_info(video_id: str):
     if video_id:
-        st.image(f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg", width="100%")
+        st.image(f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg", width=600)
         st.success(f"📺 Video ID: `{video_id}` ready!")
 
 def handle_video_processing(video_id=""):
