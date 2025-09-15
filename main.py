@@ -284,7 +284,8 @@ def display_video_info(video_id: str):
         with col1:
             # Show video thumbnail
             thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
-            st.image(thumbnail_url, width="stretch")
+            st.image(thumbnail_url, use_column_width=True)
+
 
         with col2:
             st.success("✅ Valid YouTube URL detected!")
@@ -486,7 +487,7 @@ handle_video_processing(video_id)
 chat_model = None
 if user_api_key:
     # Ensure env var is set for the underlying client
-    os.environ["GOOGLE_API_KEY"] = user_api_key
+    os.environ["GEMINI_API_KEY"] = user_api_key
     chat_model = get_chat_model(selected_model, user_api_key)
 
 
