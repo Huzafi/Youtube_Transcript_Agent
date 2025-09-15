@@ -11,7 +11,7 @@ import asyncio
 
 # Load environment variables
 
-gemini_api_key = st.secrets["GEMINI_API_KEY"]
+gemini_api_key = st.secrets["GOOGLE_API_KEY"]
 if not gemini_api_key:
     raise ValueError("GEMINI_API_KEY is not set. Please check your .env file.")
 
