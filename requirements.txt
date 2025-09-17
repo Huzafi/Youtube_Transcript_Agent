@@ -1,8 +1,9 @@
-jupyterlab
-ipykernel
-ipywidgets
-openai-agents
-openai>=1.12.0
-youtube-transcript-api>=0.6.0
 streamlit
-
+python-dotenv
+youtube-transcript-api
+langchain
+langchain-community
+langchain-core
+langchain-google-genai
+faiss-cpu
+sentence-transformers
