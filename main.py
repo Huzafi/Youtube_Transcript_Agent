@@ -1,124 +1,496 @@
 
-
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
-import re
 import os
-
-from agents import Agent, function_tool, Runner, AsyncOpenAI, OpenAIChatCompletionsModel, RunConfig
-from openai.types.responses import ResponseTextDeltaEvent
+from dotenv import load_dotenv
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings   
+from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import PromptTemplate
 import asyncio
+from langchain_core.runnables import (
+    RunnableParallel,
+    RunnableLambda,
+    RunnablePassthrough,
+)
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+)
+from langchain_google_genai import ChatGoogleGenerativeAI
+from datetime import datetime
+import time
+
+# Constants
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+EMBEDDING_MODEL = "models/embedding-001"
+RETRIEVER_K = 4
+DEFAULT_SYSTEM_MESSAGE = """
+You are YouTube RAG Assistant 📺🤖. 
+Your role is to help users understand and explore the content of YouTube videos by using the retrieved transcript context. 
+
+Follow these rules:
+1. Always prioritize the transcript/context when answering questions about the video. 
+   - Summarize, explain, or extract details only from the retrieved text.
+   - If the answer is not present in the transcript, clearly say you don’t know.
+   
+2. Also maintain awareness of the ongoing chat history (previous user and assistant messages in this session). 
+   - If the user asks about their previous messages, use the chat history instead of the transcript.
+   - For example, if the user asks “what is my name” and they told you earlier, answer from the chat history.
+
+3. Never invent facts. If the context or chat history does not contain the answer, politely say you don’t know. 
+
+4. Keep your tone friendly, clear, and concise. 
+   - Use bullet points or short paragraphs if the answer is long. 
+   - Do not repeat the system instructions in your answers.
+"""
 
 # Load environment variables
+load_dotenv()
 
-gemini_api_key = st.secrets["GOOGLE_API_KEY"]
-if not gemini_api_key:
-    raise ValueError("GEMINI_API_KEY is not set. Please check your .env file.")
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-# Setup Gemini client
-external_client = AsyncOpenAI(
-    api_key=gemini_api_key,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-)
 
-# Setup model and config
-model = OpenAIChatCompletionsModel(
-    model="gemini-2.0-flash",
-    openai_client=external_client
-)
+# Initialize session state
+def init_session_state():
+    """Initialize all session state variables"""
+    if "messages" not in st.session_state:
+        st.session_state.messages = [SystemMessage(content=DEFAULT_SYSTEM_MESSAGE)]
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "current_video_id" not in st.session_state:
+        st.session_state.current_video_id = None
 
-config = RunConfig(
-    model=model,
-    model_provider=external_client,
-    tracing_disabled=True
-)
 
-# Agent instructions
-instructions = (
-    "You provide help with tasks related to YouTube videos. "
-    "Always use the `fetch_youtube_transcript` tool to fetch the transcript of a YouTube video."
-)
+def configure_page():
+    st.set_page_config(
+        page_title="YouTube RAG Chat",
+        page_icon="🎥",
+        layout="centered",
+    )
 
-# Tool function
-@function_tool
-def fetch_youtube_transcript(url: str) -> str:
-    from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+    st.title("⚡YouTube x RAG Assistant")
+    st.markdown("### Transform any YouTube video into an interactive conversation")
 
-    video_id_pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
-    video_id_match = re.search(video_id_pattern, url)
+def center_app():
+    st.markdown(
+        """
+        <style>
+        /* Center the main content */
+        .block-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            # text-align: center;
+            max-width: 800px; /* prevent content from stretching too wide */
+            margin: auto;
+        }
 
-    if not video_id_match:
-        raise ValueError("Invalid YouTube URL")
+        #transform-any-you-tube-video-into-an-interactive-conversation,#you-tube-x-rag-assistant{
+        text-align:center;
+        }
 
-    video_id = video_id_match.group(1)
+        /* Center text inputs and buttons */
+        .stTextInput, .stButton {
+            width: 100% !important;
+            # max-width: 500px;
+            margin: auto;
+        }
 
-    try:
-        # New way to get transcript
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = transcript_list.find_transcript(['en']).fetch()
+        @media (max-width: 768px) {
+                .stVerticalBlock{
+                align-items:center;
+                }
+            }
+        
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        formatted_entries = []
-        for entry in transcript:
-            minutes = int(entry['start'] // 60)
-            seconds = int(entry['start'] % 60)
-            timestamp = f"[{minutes:02d}:{seconds:02d}]"
-            formatted_entries.append(f"{timestamp} {entry['text']}")
-        return "\n".join(formatted_entries)
 
-    except TranscriptsDisabled:
-        raise Exception("Transcripts are disabled for this video.")
-    except NoTranscriptFound:
-        raise Exception("No transcript available in English.")
-    except Exception as e:
-        raise Exception(f"Error fetching transcript: {str(e)}")
 
-# Define the agent
-agent = Agent(
-    name="YouTube Transcript Agent",
-    instructions=instructions,
-    tools=[fetch_youtube_transcript],
-)
+def handle_new_video_button():
+    """Clear current video and start fresh"""
+    if st.sidebar.button("🔄 New Video", use_container_width=True):
+        # Clear video-related session state
+        if "retriever" in st.session_state:
+            del st.session_state["retriever"]
+        if "current_video_id" in st.session_state:
+            st.session_state.current_video_id = None
 
-# -------------------- Streamlit UI --------------------
-st.title("🎬 YouTube Transcript Agent")
-st.write("Paste a YouTube video link and ask questions like:\n- 'Summarize this video'\n- 'List key points'\n- 'What is the video about?'")
+        st.session_state.messages = [SystemMessage(content=DEFAULT_SYSTEM_MESSAGE)]
 
-# Initialize session state for chat history
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+        st.success("🔄 Ready for new video!")
+        time.sleep(1)
+        st.rerun()
 
-# User input
-user_input = st.text_input("Your message:", key="input_box")
 
-async def process_message(message):
-    input_items = [{"role": "user", "content": message}]
-    response_text = ""
+def handle_sidebar():
+    # Sidebar for API key
+    st.sidebar.header("🔑 Configuration")
 
-    result = Runner.run_streamed(agent, input_items, run_config=config)
-
-    async for event in result.stream_events():
-        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-            response_text += event.data.delta
-        elif event.type == "run_item_stream_event":
-            if event.item.type == "tool_call_item":
-                response_text += "\n⏳ Fetching transcript..."
-            elif event.item.type == "tool_call_output_item":
-                response_text += f"\n✅ Transcript fetched:\n{event.item.output}"
-
-    return response_text
-
-# Handle submit
-if st.button("Send") and user_input:
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
-    
-    # Run async agent in Streamlit
-    response = asyncio.run(process_message(user_input))
-    
-    st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-# Display chat
-for chat in st.session_state.chat_history:
-    if chat["role"] == "user":
-        st.markdown(f"**You:** {chat['content']}")
+    api_key = st.sidebar.text_input(
+        "Your Google Gemini API Key",
+        type="password",
+        placeholder="Enter your API key...",
+        help="Your key is kept only in your current browser session.",
+        value=st.session_state.get("api_key", ""),
+    )
+    if api_key:
+        st.session_state.api_key = api_key
+        if len(api_key) < 20:
+            st.sidebar.error("⚠️ This API key looks too short. Please check it.")
+        elif not api_key.startswith("AIza"):
+            st.sidebar.warning(
+                "⚠️ This doesn't look like a Google API key. Double-check it."
+            )
+        else:
+            os.environ["GOOGLE_API_KEY"] = api_key
+            st.sidebar.success("✅ API key set for this session")
     else:
-        st.markdown(f"**Agent:** {chat['content']}")
+        st.sidebar.info("💡 Enter your API key to start chatting")
+
+    st.sidebar.divider()
+
+    selected_model = st.sidebar.selectbox(
+        "Generation Models",
+        [
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash-image-preview",
+            "gemini-live-2.5-flash-preview",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash-001",
+            "gemini-2.0-flash-lite-001",
+            "gemini-2.0-flash-live-001",
+            "gemini-2.0-flash-live-preview-04-09",
+            "gemini-2.0-flash-preview-image-generation",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+        ],
+        index=0,
+        help="Choose the Gemini model for generation",
+    )
+
+    st.session_state.model = selected_model
+
+    st.sidebar.divider()
+
+    st.sidebar.subheader("💬 Chat Controls")
+
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.messages = [SystemMessage(content=DEFAULT_SYSTEM_MESSAGE)]
+            st.rerun()
+
+    with col2:
+        if st.button("🔄 Clear Cache", use_container_width=True):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("Cache cleared!")
+
+    handle_new_video_button()
+
+    st.sidebar.divider()
+    st.sidebar.subheader("📊 Session Info")
+
+    message_count = len(st.session_state.messages) - 1  # Exclude system message
+    video_processed = (
+        "retriever" in st.session_state
+        and st.session_state.get("retriever") is not None
+    )
+
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        st.metric("Messages", message_count)
+    with col2:
+        st.metric("Video", "✅" if video_processed else "❌")
+
+    if video_processed:
+        st.sidebar.success("🎥 Video ready for chat")
+    else:
+        st.sidebar.info("📹 No video processed yet")
+
+    st.sidebar.info(f"**Current Model:**\n{selected_model}")
+
+    if message_count > 0:
+        st.sidebar.divider()
+        chat_text = ""
+        for msg in st.session_state.messages[1:]:  # Skip system message
+            role = "User" if isinstance(msg, HumanMessage) else "Assistant"
+            chat_text += f"{role}: {msg.content}\n\n"
+
+        st.sidebar.download_button(
+            "📥 Download Chat",
+            chat_text,
+            f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            "text/plain",
+            use_container_width=True,
+            help="Download your conversation history",
+        )
+
+    # Main interface
+    video_url = st.text_input(
+        "🔗 YouTube Video URL", placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
+    )
+    video_id = extract_video_id(video_url) if video_url else ""
+    st.session_state.current_video_id = video_id
+
+    if video_id:
+        display_video_info(video_id)
+    elif video_url and not video_id:
+        st.error("❌ Invalid YouTube URL format")
+        st.info("💡 Please use: youtube.com/watch?v=... or youtu.be/...")
+
+    return selected_model, video_id, st.session_state.get("api_key")
+
+
+def extract_video_id(url_or_id: str) -> str:
+    """Extract video ID from YouTube URL or return ID if already provided"""
+    if "youtube.com/watch?v=" in url_or_id:
+        video_id = url_or_id.split("v=")[1].split("&")[0]
+    elif "youtu.be/" in url_or_id:
+        video_id = url_or_id.split("youtu.be/")[1].split("?")[0]
+    else:
+        video_id = url_or_id  # Assume it's already an ID
+
+    if len(video_id) == 11:
+        return video_id
+    else:
+        return ""
+
+
+def display_video_info(video_id: str):
+    """Display basic video information"""
+    if video_id:
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            # Show video thumbnail
+            thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+            st.image(thumbnail_url, width="stretch")
+
+        with col2:
+            st.success("✅ Valid YouTube URL detected!")
+            st.info(f"📺 Video ID: `{video_id}`")
+            st.markdown(
+                f"🔗 [Open in YouTube](https://www.youtube.com/watch?v={video_id})"
+            )
+
+
+def handle_video_processing(video_id=""):
+    if st.button("🚀 Process Video", type="primary"):
+        user_api_key = st.session_state.get("api_key", "")
+        if not user_api_key:
+            st.error("❌ Please enter your Google Gemini API key in the sidebar first!")
+            st.info("💡 You need a valid API key to process videos and chat")
+            return
+        elif not video_id:
+            st.error("❌ Please enter a valid YouTube URL!")
+            st.info(
+                "💡 Supported formats:\n- https://www.youtube.com/watch?v=VIDEO_ID\n- https://youtu.be/VIDEO_ID\n- VIDEO_ID"
+            )
+            return
+        else:
+            with st.spinner("Processing video..."):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                # Step 1: Extract transcript
+                status_text.text("🔄 Step 1/4: Extracting transcript...")
+                progress_bar.progress(25)
+                try:
+                    ytt_api = YouTubeTranscriptApi()
+                    transcript_list = ytt_api.fetch(video_id)
+                    transcript = " ".join(snippet.text for snippet in transcript_list)
+                except TranscriptsDisabled:
+                    st.error("❌ Transcripts are disabled for this video.")
+                    st.stop()
+                except Exception as e:
+                    st.error(
+                        f"❌ An error occurred. This video is not transcribed:(\nWe couldn’t fetch the transcript. YouTube may be blocking requests from your current network. Please try again later or switch to another connection"
+                    )
+                    st.stop()
+
+                # Step 2: Split into chunks and create vector store
+                status_text.text("📄 Step 2/4: Splitting into chunks...")
+                progress_bar.progress(50)
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=CHUNK_SIZE,
+                    chunk_overlap=CHUNK_OVERLAP,
+                )
+                chunks = splitter.create_documents([transcript])
+
+                # Step 3: Create embeddings (✅ changed to HuggingFace)
+                status_text.text("🧠 Step 3/4: Creating embeddings...")
+                progress_bar.progress(75)
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2"
+                )
+
+                # Step 4: Build vector store
+                status_text.text("🗂️ Step 4/4: Building search index...")
+                progress_bar.progress(100)
+                vector_store = FAISS.from_documents(chunks, embeddings)
+                retriever = vector_store.as_retriever(
+                    search_type="similarity", search_kwargs={"k": RETRIEVER_K}
+                )
+                st.session_state["retriever"] = retriever
+                # Clear progress indicators
+                progress_bar.empty()
+                status_text.empty()
+
+                # Re-run to update UI state
+                st.success("✅ Video processed! Ready for questions.")
+                time.sleep(2)
+                st.rerun()
+
+def format_docs(retrieved_docs):
+    context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+    return context_text
+
+
+@st.cache_resource()
+def get_chat_model(model_name: str, api_key_keyed_for_cache: str | None):
+    # api_key_keyed_for_cache is unused except for cache key isolation across different keys
+    return ChatGoogleGenerativeAI(model=model_name)
+
+
+def display_chat_messages():
+    for message in st.session_state.messages[1:]:
+        if isinstance(message, HumanMessage):
+            with st.chat_message("user"):
+                st.write(message.content)
+
+        if isinstance(message, AIMessage):
+            with st.chat_message("assistant"):
+                st.write(message.content)
+
+
+def handle_user_input(chat_model, input_disabled: bool = False):
+    if prompt := st.chat_input(
+        "Ask a question about the video...", disabled=input_disabled
+    ):
+        if not prompt.strip():
+            st.warning("Please type a message before sending!")
+            return
+
+        st.session_state.messages.append(HumanMessage(content=prompt))
+
+        prompt_template = PromptTemplate(
+            template="""Based on this video transcript content:
+
+            {context}
+
+            Question: {question}""",
+            input_variables=["context", "question"],
+        )
+
+        with st.chat_message("user"):
+            st.write(prompt)
+
+        retriever = st.session_state.get("retriever")
+        if not retriever:
+            with st.chat_message("assistant"):
+                error_msg = (
+                    "❌ Please process a video first to enable question answering."
+                )
+                st.error(error_msg)
+                st.session_state.messages.append(AIMessage(content=error_msg))
+            return
+        with st.chat_message("assistant"):
+            with st.spinner("🤔 Analyzing video content..."):
+                try:
+                    retrieved_docs = retriever.invoke(prompt)
+                    if not retrieved_docs:
+                        no_context_msg = "🤷‍♂️ I couldn't find relevant information in the video transcript for your question."
+                        st.warning(no_context_msg)
+                        st.session_state.messages.append(
+                            AIMessage(content=no_context_msg)
+                        )
+                        return
+                    parallel_chain = RunnableParallel(
+                        {
+                            "context": retriever | RunnableLambda(format_docs),
+                            "question": RunnablePassthrough(),
+                        }
+                    )
+                    parser = StrOutputParser()
+                    main_chain = parallel_chain | prompt_template | chat_model | parser
+
+                    message_placeholder = st.empty()
+                    full_response = ""
+
+                    # Stream the response using stream method (synchronous)
+                    for chunk in main_chain.stream(prompt):
+                        if chunk and chunk.strip():
+                            full_response += chunk
+                            message_placeholder.markdown(
+                                full_response + "▌"
+                            )  # Cursor indicator
+
+                    # Remove cursor and display final response
+                    if full_response and full_response.strip():
+                        message_placeholder.markdown(full_response)
+                        st.session_state.messages.append(
+                            AIMessage(content=full_response)
+                        )
+                    else:
+                        error_msg = (
+                            "🚫 No response received. Please try a different model."
+                        )
+                        message_placeholder.error(error_msg)
+                        st.session_state.messages.append(AIMessage(content=error_msg))
+
+                    # Rerun to refresh the UI after streaming
+                    st.rerun()
+
+                except Exception as e:
+                    error_message = str(e).lower()
+                    if "not found" in error_message or "invalid" in error_message:
+                        error_msg = "❌ This model is not available. Please select a different model."
+                    elif "quota" in error_message or "limit" in error_message:
+                        error_msg = "📊 API quota exceeded. Please try again later or use a different model."
+                    elif "timeout" in error_message:
+                        error_msg = (
+                            "⏱️ Request timed out. Try a different model or try again."
+                        )
+                    else:
+                        error_msg = f"❌ An error occurred. Try selecting different model or check your api key:("
+
+                    st.error(error_msg)
+                    st.session_state.messages.append(AIMessage(content=error_msg))
+            # st.rerun()
+
+
+init_session_state()
+configure_page()
+center_app()
+selected_model, video_id, user_api_key = handle_sidebar()
+handle_video_processing(video_id)
+chat_model = None
+if user_api_key:
+    # Ensure env var is set for the underlying client
+    os.environ["GOOGLE_API_KEY"] = user_api_key
+    chat_model = get_chat_model(selected_model, user_api_key)
+
+
+display_chat_messages()
+
+if chat_model is None:
+    st.warning(
+        "Please enter your Google Gemini API key in the sidebar to start chatting."
+    )
+
+handle_user_input(chat_model, input_disabled=(chat_model is None))
