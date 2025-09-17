@@ -9,7 +9,7 @@ This agent allows users to input their Google Gemini API key and a YouTube video
 ✅ Embeddings & Vector Search for deep insights
 ✅ AI-generated summaries & Q&A from video content
 
-🚀 Features
+# 🚀 Features
 
 🔑 Secure API key input (Google Gemini)
 
@@ -21,7 +21,7 @@ This agent allows users to input their Google Gemini API key and a YouTube video
 
 📊 Summaries, key points, and context-based Q&A
 
-🛠️ Tech Stack
+# 🛠️ Tech Stack
 
 Python 3.10+
 
