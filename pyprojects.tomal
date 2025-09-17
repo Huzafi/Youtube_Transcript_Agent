@@ -1,0 +1,22 @@
+[project]
+name = "streamlit-langchain-chatbot"
+version = "0.1.0"
+description = "A Streamlit chatbot powered by LangChain and Google Gemini models."
+readme = "README.md"
+requires-python = ">=3.12"
+
+license = { file = "LICENSE" }
+
+authors = [
+    { name = "Huzaifa sheikh", email = "huzai567823@gmail.com" }
+]
+
+dependencies = [
+    "dotenv>=0.9.9",
+    "langchain>=0.3.27",
+    "langchain-google-genai>=2.1.10",
+    "streamlit>=1.49.1",
+]
+
+[project.urls]
+Repository = "https://github.com/Huzafi/Youtube_Transcript_Agent"
